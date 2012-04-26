@@ -22,20 +22,20 @@ em_os_user(){ em $(get_em) os.user; }
 
 ref(){ # no help. DC EM host os_user db.name db.user db.pass
 #  _em="`get_em`"
-  echo "SAPDEV GUI_Clients_001 sapteqs1 controlm ctrlm630 controlm sybase
-EDDDEV GUI_Clients_001 eaixctm controlm ctrlm630 controlm sybase
-EDDPRD GUI_Clients_001 eaipctm controlm ctrlm630 controlm sybase
-SAPPDT GUI_Clients_001 cemprdte ctm_adm ctrlm630 ctm_adm sybase
-SVGP01 GUI_Clients_001 saptesvg3 controlm ctrlm630 controlm sybase
-SVGP02 GUI_Clients_001 saptesvg controlm ctrlm630 controlm sybase
-SAPPE1 GUI_Clients_001 eprocprd controlm ctrlm630 controlm sybase
-SAPP3A GUI_Clients_001 sapp3a controlm ctrlm630 controlm sybase
-SAPP3B GUI_Clients_001 sapp3b controlm ctrlm630 controlm sybase
-SAPP3D GUI_Clients_001 sapp3d controlm ctrlm630 controlm sybase
-SAPP3F GUI_Clients_001 sapp3f controlm ctrlm630 controlm sybase
-SAPP3G GUI_Clients_001 sapp3g controlm ctrlm630 controlm sybase
-LPADEV GUI_Clients_001 ergsapq01 controlm ctrlm630 controlm sybase
-LPAPRD GUI_Clients_001 ergsapp01 controlm ctrlm630 controlm sybase"
+  echo "SAPDEV GUI_Clients_001 sapteqs1 controlm ctrlm630 controlm xxx
+EDDDEV GUI_Clients_001 eaixctm controlm ctrlm630 controlm xxx
+EDDPRD GUI_Clients_001 eaipctm controlm ctrlm630 controlm xx
+SAPPDT GUI_Clients_001 cemprdte ctm_adm ctrlm630 ctm_adm xxxx
+SVGP01 GUI_Clients_001 saptesvg3 controlm ctrlm630 controlm xxx
+SVGP02 GUI_Clients_001 saptesvg controlm ctrlm630 controlm xxxx
+SAPPE1 GUI_Clients_001 eprocprd controlm ctrlm630 controlm xx
+SAPP3A GUI_Clients_001 sapp3a controlm ctrlm630 controlm xxx
+SAPP3B GUI_Clients_001 sapp3b controlm ctrlm630 controlm xxx
+SAPP3D GUI_Clients_001 sapp3d controlm ctrlm630 controlm xxx
+SAPP3F GUI_Clients_001 sapp3f controlm ctrlm630 controlm xxx
+SAPP3G GUI_Clients_001 sapp3g controlm ctrlm630 controlm xxxx
+LPADEV GUI_Clients_001 ergsapq01 controlm ctrlm630 controlm xxxx
+LPAPRD GUI_Clients_001 ergsapp01 controlm ctrlm630 controlm xxx"
 #  unset _em
 }
 all(){
