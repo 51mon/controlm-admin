@@ -1,0 +1,98 @@
+#!/bin/bash
+
+. $API_HOME/general_api
+
+case $agent in
+  tessapp01) sudo=sudo;;
+  *) sudo=/usr/local/bin/sudo;;
+esac
+
+ctm_agent_dir(){
+  case $agent in
+    xfbprep1) echo /xfbprep1/produits/ctmagent;;
+    xfbprod*) echo /xfbprod/produits/ctmagent;;
+    ecompre*) echo /ecomedi2/produits/ctmagent;;
+    ecomprd*) echo /ecomedi/produits/ctmagent;;
+    eaiprep*|eaiprd*) echo /ctmagent;;
+    *) echo /produits/ctmagent;;
+  esac
+}
+
+user(){
+  case $agent in
+    sapadmp*|teucolr01) echo ctma_adm;;
+    *) echo ctmagent;;
+  esac
+}
+agent_ssh(){ ssh -o BatchMode=yes -o StrictHostKeyChecking=no `user`@$agent "$1" 2>/dev/null; }
+
+ctmcreate(){
+  dc_host=`get_primary_server`
+  dc=`dc $dc_host get_dc_name_by_host`
+  dc $dc ctmcreate -n $agent $@
+}
+
+get_permhosts(){ agent_ssh "grep CTMPERMHOSTS ctm/data/CONFIG.dat | sed 's/.* //; s/\|/ /g'"; }
+
+has_permhost(){
+#  box="$1"
+  host="$1"
+  agent_ssh "egrep '^CTMPERMHOSTS.*[ |]$host(\||$)' ctm/data/CONFIG.dat >/dev/null"
+  rc=$?
+  log INFO "$host is `[ $rc -ne 0 ] && echo 'not '`a ctmpermhost (ctm server) of $agent"
+  return $rc
+}
+
+add_permhost(){
+#  box="$1"
+  host="$1"
+  agent_ssh "test -w ctm/data/CONFIG.dat" || return 1
+  has_permhost $host && { log WARN "Host $host already in $agent permhosts"; return; }
+  if agent_ssh "cp -p ctm/data/CONFIG.dat ctm/data/CONFIG.dat_`date '+%Y%m%d_%H%M%S'`
+sed '/CTMPERMHOSTS.*/ s/\$/\|$host/g' ctm/data/CONFIG.dat >> ctm/data/CONFIG.dat.new
+mv ctm/data/CONFIG.dat.new ctm/data/CONFIG.dat" 2>/dev/null; then
+    log INFO "Ajout de $host a l'agent de $agent est ok, les perm hosts sont `get_permhosts $agent`"
+  else
+    log ERROR "Ajout de $host a l'agent de $agent est KO"
+    return 1
+  fi
+}
+
+rm_permhost(){
+#  box="$1"
+  host="$1"
+  agent_ssh "test -w ctm/data/CONFIG.dat" || return 1
+  has_permhost $host || { log WARN "Host $host not present in $agent permhosts"; return; }
+  if agent_ssh "cp -p ctm/data/CONFIG.dat ctm/data/CONFIG.dat_`date '+%Y%m%d_%H%M%S'`
+sed '/CTMPERMHOSTS.*/ {s/ $host$/ /; s/ $host\|/ /; s/\|$host$//; s/\|$host\|/\|/; }' ctm/data/CONFIG.dat >> ctm/data/CONFIG.dat.new || exit 1
+mv ctm/data/CONFIG.dat.new ctm/data/CONFIG.dat" 2>/dev/null; then
+    log INFO "Suppression de $host a l'agent de $agent est ok, les perm hosts sont `get_permhosts $agent`"
+  else
+    log ERROR "Suppression de $host a l'agent de $agent est KO"
+    return 1
+  fi
+}
+
+start(){ agent_ssh "$sudo `ctm_agent_dir`/ctm/scripts/start-ag -u `user` -p ALL"; }
+stop(){ agent_ssh "$sudo `ctm_agent_dir`/ctm/scripts/shut-ag -u `user` -p ALL"; }
+ps(){ agent_ssh "shagent"; }
+shagent(){ ps; }
+
+update_primary_server_to(){
+  [ $# -eq 1 ] || { log ERROR "takes the new primary server as argument"; return 1; }
+  new_ctms=$1
+  agent_ssh "test -w ctm/data/CONFIG.dat" || return 1
+  agent_ssh "cp ctm/data/CONFIG.dat ctm/data/CONFIG.dat_`date '+%Y%m%d_%H%M%S'`"
+  old=`agent_ssh "grep CTMSHOST ctm/data/CONFIG.dat | sed 's/^CTMSHOST *//'"` || return 1
+  [ "$old" = "" ] && { log ERROR "Current primary server empty"; return 1; }
+  log INFO "Update the primary server from $old to $new_ctms"
+  agent_ssh "sed 's/$old/$new_ctms/' ctm/data/CONFIG.dat > ctm/data/CONFIG.dat.new"
+  agent_ssh "mv ctm/data/CONFIG.dat.new ctm/data/CONFIG.dat"
+  log INFO "A restart is needed to use the new primary Ctm server..."
+  stop_agent || return 1
+  start_agent
+} 
+
+get_primary_server(){
+  agent_ssh "grep CTMSHOST ctm/data/CONFIG.dat | sed 's/^CTMSHOST *//'"
+}

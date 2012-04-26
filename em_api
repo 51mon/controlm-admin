@@ -1,0 +1,191 @@
+#!/bin/bash 
+
+# Charge les fonctions generales et sybase
+. $API_HOME/general_api
+
+#CEMPRDTE cemprdte em_adm admin1 em630 em_adm
+em_ref(){ # no help
+  echo "GUI_Clients_001 cemprdte em_adm admin1 em630 em_adm
+SAPADMINTE sapadminte em_adm admin1 em630 em_adm
+SAPTEUS2 sapteus2 sa sybase em630 ctmem
+EAIB01 eaib01 sa sybase em630 em_adm
+TRDADM4 trdadm4 emuser Coefar99 em620 ecs
+TRMADM03 trmadm03.trd.total.com emuser Coefar99 em620 em"
+}
+
+get_em_from_host(){
+  [ `em_ref |egrep -c "^[a-zA-Z0-9_-]* $1 "` -eq 0 ] && { log ERROR "get_em_from_host KO pas de ligne correspondante"; return 1; }
+  em_ref |egrep "^[a-zA-Z0-9_-]* $1 " |cut -d' ' -f1
+}
+
+em(){ # no help
+  if [ "$em" = "" ]; then
+    em=GUI_Clients_001
+  else
+    if [ `em_ref | grep -c $em` -eq 1 ]; then
+      echo $em
+    else
+      log ERROR "EM $em unknown."
+      return 1
+    fi
+  fi
+}
+
+get_em_attribute(){ # no help
+  [ $# -eq 1 ] || { log ERROR "get_em_attribute takes 1 arg: nb of attribute"; return 1; }
+  [ `em_ref | grep -c $em` -eq 1 ] || { log ERROR "EM $em unknown."; return 1; }
+  em_ref | grep $em |cut -d' ' -f$1
+}
+
+db_host(){ get_em_attribute 2 || return 1; }
+#alias em_host=db_host
+em_host(){ db_host; }
+db.user(){ get_em_attribute 3 || return 1; }
+db.pass(){ get_em_attribute 4 || return 1; } # no help
+db.name(){ get_em_attribute 5 || return 1; }
+os.user(){ get_em_attribute 6 || return 1; }
+
+em_ssh(){ $ssh_cmd `os.user`@`em_host` "$1" 2>/dev/null; }
+
+# Les fonctions db_user db_pass db_name doivent etre definies
+batch_sql(){
+  [ -w /tmp ] || { log ERROR "/tmp inaccessible"; return 1; }
+  em_ssh "isql -U `db.user` -P `db.pass` -D `db.name` -b -w 1000" <<EOF |tee /tmp/batch_sql.tmp |sed 's/^ *//;s/ *$//'
+set nocount on
+go
+$1
+go
+EOF
+  [ $? -eq 0 ] || { log ERROR "isql KO : `cat /tmp/batch_sql.tmp`"; rm /tmp/batch_sql.tmp; return 1; }
+  errors=`cat /tmp/batch_sql.tmp | egrep '^Server |Msg [0-9]*, Level [0-9]*, State [0-9]*'`
+  rm /tmp/batch_sql.tmp
+  if [ "$errors " != " " ]; then
+    log ERROR "Request KO"
+    return 1
+  fi
+}
+
+sql(){
+  batch_sql "set nocount off
+go
+$1"
+}
+
+em_get(){ scp -o StrictHostKeyChecking=no `os.user`@`em_host`:$1 ${2-.}; }
+em_put(){ scp -o StrictHostKeyChecking=no $1 `os.user`@`em_host`:${2-.}; }
+
+gcs_logs(){
+  [ $# -eq 1 ] && filter_regexp=" | egrep '$1'" || filter_regexp=""
+  em_ssh "cat \`ls -1 log/GCS_LOG* |sort -t'.' -k3\` | egrep -v '^\$' $filter_regexp"
+}
+find(){
+  [ -f $API_HOME/em_find ] || { log ERROR "Script em_find inacessible"; return 1; }
+  em_host=`em_host $em`
+  db_user=`db.user $em`
+  db_pass=`db.pass $em`
+  db_name=`db.name $em`
+  os_user=`os.user $em`
+  export em_host db_user db_pass db_name os_user
+  $API_HOME/em_find "$@"
+}
+
+backup_dcs(){
+  for dc in `find dc`; do dc $dc export_tables; done
+}
+
+next_table_id(){ batch_sql "select max(TABLE_ID)+1 from DEF_TABLES"; }
+
+ecs_cli(){
+  host=`em_host`
+  output=`em_ssh "ecs cli -PF .em_login -H $em $1"`
+  [ `echo $output | egrep -c "Error :|Reason \[[0-9]*\]|REQUEST REJECTED"` -ne 0 ] && status=ERROR || status=INFO
+  log $status "`echo $output |sed 's/^$//'`"
+  [ $status != INFO ] && return 1
+}
+# Fonctions utilisees par les export_* de dc_api (elles prennent -arg terms.xml)
+exportdefjob(){ em_ssh "exportdefjob -pf .em_login -s $em $1" |sed 's/^$//'; } # no help
+exportdeftable(){ em_ssh "exportdeftable -pf .em_login -s $em $1" |sed 's/^$//'; } # no help
+exportdefcal(){ em_ssh "exportdefcal -pf .em_login -s $em $1" |sed 's/^$//'; } # no help
+defjob(){ em_ssh "defjob -pf .em_login -s $em $1" |sed 's/^$//'; } # no help
+deftable(){ em_ssh "deftable -pf .em_login -s $em $1" |sed 's/^$//'; } # no help
+deldefjob(){ em_ssh "deldefjob -pf .em_login -s $em $1" |sed 's/^$//'; } # no help
+
+build_terms(){
+  if [ $# -lt 1 ] || [ $# -gt 3 ]; then
+    log ERROR "takes 1 to 3 arguments (+std input) : DC [table|-] [job|-]. No arg = ALL, '-' = std input."
+    return 1
+  fi
+  unset _dc _table _job
+#  [ $2 = table ] || [ $2 = '-' ] && log DEBUG "Reads the table param from standart input"
+  analyze_arg(){
+    arg_type=$1
+    arg="$2"
+    if [ "$type_arg" = "$arg" ] || [ "$arg" = "'-'" ]; then
+      log DEBUG "Reads the $arg_type from standart input"
+      sed 's/"//g' |nawk 'BEGIN{a=""}{if(a==""){a=$1}else{a=a " " $1}}END{print a}' | sed "s/ /' '/g; s/^/'/; s/$/'/"
+    else
+      echo $arg | sed 's/"//g; s/,/ /g; s/;/ /g'
+    fi
+  }
+  [ $# -lt 3 ] && _job="'*'" || _job=`analyze_arg job "'$3'"`
+  [ $# -lt 2 ] && _table="'*'" || _table=`analyze_arg table "'$2'"`
+  _dc=`analyze_arg dc "'$1'"`
+#  while [ "$1" ]; do
+#  get_arg(){ echo $1 |sed 's/^.*=//; s/,/ /g; s/;/ /g'; }
+
+#    case $1 in
+#      dc=*) _dc=`get_arg "$1"`; shift;;
+#      table=*) _table=`get_arg "$1"`; shift;;
+#      job=*) _job=`get_arg "$1"`; shift;;
+#      dc) while read d; do _dc="$_dc \"$d\""; done; shift;; #_dc=`while read d; do echo $d; done`; shift;;
+#      table) while read d; do _table="$_table \"$d\""; done; shift;;
+#      job) while read d; do _job="$_job \"$d\""; done; shift;;
+#      *) log ERROR "Param $1 incorrect"; shift;;
+#    esac
+#  done
+#  [ "$_dc" = "" ] && _dc=`while read d; do echo "\"$d\""; done`
+#  [ "$_table" = "-" ] && _table=`while read d; do echo "\"$d\""; done`
+#  [ "$_job" = "-" ] && _job=`while read d; do echo "\"$d\""; done`
+#  [ "$_table" = "" ] && _table="\"*\""
+#  [ "$_job" = "" ] && _job="\"*\""
+
+  log DEBUG "dc=$_dc, table=$_table, job=$_job"
+    
+  operator(){ [ `echo "$1" |grep -c '*'` -gt 0 ] && echo "LIKE" || echo "EQ"; }
+
+  /usr/bin/echo "<!DOCTYPE TERMS SYSTEM 'terms.dtd'>\n<TERMS>"
+
+  for data_center in $_dc; do
+    for table in $_table; do
+      for job in $_job; do
+        echo " <TERM>"
+        echo "  <PARAM NAME='DATACENTER' OP='`operator '$data_center'`' VALUE=$data_center />"
+        [ "$table" = "\"*\"" ] || echo "  <PARAM NAME='TABLE_NAME' OP='`operator $table`' VALUE=$table />"
+        [ "$job" = "\"*\"" ] || echo "  <PARAM NAME='JOBNAME' OP='`operator $job`' VALUE=$job />"
+        echo " </TERM>"
+      done
+    done
+  done
+
+  echo "</TERMS>"
+}
+
+dump_db(){
+  dump_file="df_`db_name`_`date '+%Y%m%d_%H%M%S'`.dmp"
+  batch_sql "dump database `db_name` to '$dump_file'" || return 1
+}
+
+em_scp(){ scp -o BatchMode=yes -o StrictHostKeyChecking=no $em_user@`em_host`:$1 ${2-.}; }
+
+dump_db_and_keep_locally(){ # no help
+  dump_file="df_${em}_`db_name`_compress-1_`date '+%Y%m%d_%H%M%S'`.dmp"
+  batch_sql "dump database `db_name` to 'compress::1::$dump_file'" || return 1
+  log INFO "Copie locale du fichier $dump_file"
+  em_scp $dump_file || em_scp scripts/$dump_file || { log ERROR "dump absent"; return 1; }
+  em_ssh "rm $dump_file" || em_ssh "rm scripts/$dump_file" || return 1
+}
+
+import_tables(){
+  test $# -eq 1 || { log ERROR "import_tables takes 1 arg: import_file"; return 1; }
+  em_ssh "deftable -pf .em_login  -s GUI_Batchs_001 -src $1"
+}

@@ -1,0 +1,353 @@
+#!/bin/bash 
+
+. `echo ~`/api/general_api || { echo "ERROR general_api ko"; exit 1; }
+. `echo ~`/api/bash_api || { log ERROR "bash_api ko"; exit 1; }
+
+usage(){
+  echo "Description: `basename $0` permet de faire des requetes simple sur la base SQL de l'EM"
+  echo
+  echo "Usage: `basename $0` [options] attribut(s) [conditions]"
+  echo "     Avec options dans :"
+  echo "           -h         : pour obtenir ces info"
+  echo "           -a         : pour lister les attributs disponibles"
+  echo "           -v         : pour passer en mode verbeux"
+  echo "           -m mail    : pour envoyer le resultat par mail (ex: \"qqun@total.com autre@total.com\")"
+  echo "           -mcsv mail : pour envoyer le resultat par mail au format CSV"
+  echo "           -s         : pour mettre un seperateur autre que espace"
+  echo "       et attribut(s) dans data_center|dc|daily|job etc. Pour la liste complete voir l'option -a"
+  echo "       et conditions peut etre renseigné tel que :"
+  echo "           - filtrer un attribut :                       attribut=valeur"
+  echo "           - filtrer plusieurs atributs :                attr1=val1 attr2=val2 etc"
+  echo "           - filtrer plusieurs valeurs d'un attribut :   attribut=val1,val2,etc"
+  echo "           - exclure une ou plusieurs valeurs :          attribut!=val1,val2"
+  echo "           - filtrer en fonction des valeurs en entrée : attribut"
+  echo
+  echo "Ex: 1) Obtenir tous les data centers : "
+  echo "       ./`basename $0` data_center"
+  echo "    2) Obtenir les user daily du data center CEMPRDTE :"
+  echo "       ./`basename $0` daily dc=CEMPRDTE"
+  echo "    3) Obtenir les tables EXP* des data centers CEMPRDTE et SAPADMINTE :"
+  echo "       ./`basename $0` table dc=CEMPRDTE,SAPADMINTE table=EXP%"
+  echo "    4) Obtenir les tables EXP* avec leur data center sur les data centers CEMPRDTE et SAPADMINTE :"
+  echo "       ./`basename $0` table,data_center dc=CEMPRDTE,SAPADMINTE table=EXP%"
+  echo "    5) Avec un flux d'entree comportant les data centers *TE, obtenir les tables EXP* de chaque DC :"
+  echo "       ./`basename $0` dc dc=%TE | ./`basename $0` dc,table table=EXP% dc"
+  echo "    6) Obtenir les noms de job, chemin et script des jobs R* du data center SAPP3D:"
+  echo "       ./`basename $0` job,path,file_name task=Job job=R% dc=SAPP3D"
+}
+
+log(){ [ $1 != DEBUG ] || [ "$verbose" = 1 ] && echo "`date '+%Y-%m-%d %H:%M:%S'` $1 $2" 1>&2; }
+
+if [ "X$em" != X ]; then
+  db_user=`em $em db.user`
+  db_pass=`em $em db.pass`
+  db_name=`em $em db.name`
+  db_os_user=`em $em os.user`
+  db_host=`em $em em_host`
+else
+  db_os_user=em_adm
+  db_user=sa
+  db_pass=sybase
+  db_name=em620
+  db_host=cemprdte
+fi
+em_ssh(){ ssh -o StrictHostKeyChecking=no -o BatchMode=yes $db_os_user@$db_host "$1" 2>/dev/null; }
+
+add_select(){ 
+  log DEBUG "add_select $1"
+  while [ "$1" ]; do
+    [ -z "$select" ] && select="select $1" || { [ "$headers" = 1 ] && select="$select, $1" || select="$select + \"$colsep\" + $1"; }
+    shift
+  done
+}
+add_where(){
+  log DEBUG "add_where $1"
+  while [ "$1" ]; do
+    [ -z "$where" ] && where="where $1" || where="$where and $1"
+    shift
+  done
+}
+add_from(){
+  while [ "$1" ]; do
+    `echo $from |grep "$1" >/dev/null` || { [ -z "$from" ] && from="from $1" || from="$from, $1"; }
+    shift
+  done
+}
+
+ref(){
+  # table champs [alias du champs]
+  echo "COMM:DATA_CENTER:dc:
+COMM:CTM_HOST_NAME:host:
+COMM:CTM_PORT_NUMBER:port:int
+COMM:CONTROL_M_VER:version:
+COMM:PLATFORM:os:
+COMM:CODE::
+DF_CALENDAR:CALENDAR:cal:
+DF_YEARS:YEAR::
+DF_YEARS:DAYS_1:half1:
+DF_YEARS:DAYS_2:half2:
+GLOBAL_COND:PREFIX:gbl_prefix:
+GLOBAL_COND:FROM_DC:gbl_from_dc:text
+GLOBAL_COND:TO_DC:gbl_to_dc:text
+DEF_TABLES:USER_DAILY:daily ud:
+DEF_TABLES:SCHED_TABLE:table:
+DEF_TABLES:LAST_UPLOAD:upload_date:datetime
+DEF_TABLES:MODIFIED::
+DEF_JOB:JOB_NAME:job:
+DEF_JOB:DESCRIPTION:desc:
+DEF_JOB:GROUP_NAME:group:
+DEF_JOB:APPLICATION:app:
+DEF_JOB:NODE_ID:node:
+DEF_JOB:MEM_LIB:path:
+DEF_JOB:MEMNAME:file_name:
+DEF_JOB:TASK_TYPE:task:
+DEF_JOB:CMD_LINE:command cmd:text
+DEF_JOB:OWNER::
+DEF_JOB:DAYS_CAL:dcal month_days_calendar:
+DEF_JOB:WEEKS_CAL:wcal week_days_calendar:
+DEF_JOB:DAY_STR:days month_days:
+DEF_JOB:W_DAY_STR:wdays week_days:
+DEF_JOB:DAYS_AND_OR::
+DEF_JOB:FROM_TIME:from:
+DEF_JOB:TO_TIME:to:
+DEF_JOB:CYCLIC::
+DEF_JOB:INTERVAL::
+DEF_JOB:CREATION_USER::
+DEF_JOB:CREATION_DATE::
+DEF_JOB:CREATION_TIME::
+DEF_JOB:CHANGE_USERID::
+DEF_JOB:CHANGE_DATE::
+DEF_JOB:CHANGE_TIME::
+DEF_SETVAR:NAME:var variable param arg argument:
+DEF_SETVAR:VALUE:value:
+DEF_SHOUT:WHEN:when:
+DEF_SHOUT:URGENCY::
+DEF_SHOUT:MESSAGE:shout:
+DEF_LNKO_P:CONDITION:cond_out out_cond:
+DEF_LNKO_P:ODAT::
+DEF_LNKO_P:SIGN::
+DEF_LNKI_P:CONDITION:cond_in in_cond:
+DEF_LNKI_Q:RESOURCE_:qr:
+DEF_LNKI_C:RESOURCE_:rc:
+CONFREG:PROCESS_NAME::
+CONFREG:DESIRED_STATE::tinyint
+CONFREG:CURRENT_STATE::tinyint
+CONFREG:FREE_TEXT:gtw_status gateway_status:"
+}
+
+#headers=-b
+colsep=' '
+[ $# -ge 1 ] || { log ERROR "Nb arguments incorrects"; usage; exit 1; }
+while true; do
+ case $1 in
+  help|usage|-h|h) usage; exit;;
+  -a) shift
+      echo "Liste des attributs dispo classés par table :"
+      ref | awk 'BEGIN{FS=":"; t=""}{if(t==$1){print " - " $2}else{t=$1; print $1; print " - " $2}}' |tr [:upper:] [:lower:]
+      exit;;
+  -t) shift; test=1; verbose=1;;
+  -v) shift; verbose=1;;
+#  -e) headers="";;
+  -s) shift; colsep="$1"; shift;;
+  -m) shift; mail=1; destinators=`echo $1 |sed 's/,|;/ /g'`; shift; request="$@";;
+  -mcsv) shift; mail_csv=1; destinators="$1"; shift; colsep=";"; request="$@";;
+  -w) shift; where="where $1"; shift;;
+  *) break;;
+ esac
+done
+
+# get_from_model nom_attribut position_dans_le_tableau_de_la_valeur_attendue
+#unset ref_attributes
+get_from_model(){
+  ref_attributes(){ ref |sed 's/^.*:\(.*\):\(.*\):.*/\1 \2/'; }
+  nb_conf_lines_matched=`ref_attributes | egrep -ci "(^| )$1( |\$)"`
+  [ $nb_conf_lines_matched -eq 0 ] && { log ERROR "Valeur $1 absente du modele"; return 1; }
+  [ $nb_conf_lines_matched -gt 1 ] && { log ERROR "Plus d'une valeur du modele pour $1: $conf_lines_matched"; return 1; }
+  column=`ref_attributes | egrep -i "(^| )$1( |\$)" | cut -d' ' -f1`
+  #ref | egrep "^[a-zA-Z0-9_-]*:$column(:|\$)" | cut -d':' -f$2
+  ref_attributes | egrep -i "(^| )$1( |\$)" | cut -d':' -f$2
+}
+get_from_model(){
+  ref_line=`ref |egrep -i "^[a-zA-Z0-9_-]*:($1:[a-zA-Z0-9_- ]*|[a-zA-Z0-9_-]*(:[a-zA-Z0-9_-]* |:)$1( [a-zA-Z0-9_-]*:|:)).*$"`
+  nb_lines_matched=`echo $ref_line | wc -l | bc`
+  [ $nb_lines_matched -eq 0 ] && { log ERROR "Valeur $1 absente du modele"; return 1; }
+  [ $nb_lines_matched -gt 1 ] && { log ERROR "Plus d'une valeur du modele pour $1: $ref_line"; return 1; }
+  echo $ref_line | cut -d':' -f$2
+}
+get_table(){ get_from_model "$1" 1; }
+get_field(){ get_from_model "$1" 2; }
+get_type(){ get_from_model "$1" 4; }
+is_table(){ get_table "$1" 1 >/dev/null; }
+is_field(){ get_field "$1" 2 >/dev/null; }
+
+build_select(){
+  is_field "$1" || exit 1
+  field=`get_table "$1"`.`get_field "$1"`
+  log DEBUG "filed = $field"
+  # Conversion des champs de type diffrent de varchar
+  [ "X`get_type $1`" = Xtext -o "X`get_type $1`" = Xtinyint -o "X`get_type $1`" = Xint ] && field="convert(varchar(128),$field)"
+  [ X`get_type $1` = Xdatetime ] && field="convert(varchar,$field,112) convert(varchar,$field,108)"
+  add_select $field
+  add_from `get_table "$1"`
+}
+
+log DEBUG "Construction du select"
+if `echo $1 |grep ',' >/dev/null`; then
+  for arg in `echo $1 |tr ',' ' '`; do
+    build_select "$arg"
+  done
+else
+  build_select "$1"
+fi
+
+shift
+
+build_filter(){
+  log DEBUG "Construction du filtre pour $1"
+    value=`echo $1 |cut -d'=' -f2`
+    [ `echo $1 | grep -c '!'` -eq 0 ] && { not=""; non=""; } || { not="not"; non="!"; }
+    if `echo $value |grep ',' >/dev/null`; then
+      for var in `echo $value |tr ',' ' '`; do [ "$vars" ] && vars="$vars, '$var'" || vars="'$var'"; done
+      echo "$not in ($vars)"
+    else
+      `echo $value |grep '%' >/dev/null` && echo "$not like '$value'" || echo "$non= '$value'"
+    fi
+}
+
+log DEBUG "Traitement des clauses where $@"
+while [ ! -z $1 ]; do 
+ arg="$1"
+ log DEBUG "Traitement de $arg"
+ key=`echo $arg |cut -d'=' -f1 |cut -d'!' -f1`
+ is_table "$key" && table=`get_table "$key"` || exit 1
+ is_field "$key" && field=`get_field "$key"` || exit 1
+ #Ajout de la table du critere
+ add_from $table
+ # Si pas de egal, alors les arguments sont dans l'entree standard
+ if echo $arg |grep -v '=' >/dev/null; then
+  while read var; do [ "$values" ] && values="$values,$var" || values="$var"; done
+  arg="$key=$values"
+  request="$request=$values"
+ fi
+ filter=`build_filter "$arg"`
+ add_where "$table.$field $filter"
+ shift
+done
+
+add_relations(){
+  log DEBUG "Ajout des relations"
+  echo "$from" |egrep "COMM|DF_CALENDAR|GLOBAL_COND" |egrep "DEF_JOB|DEF_LNKO_P|DEF_LNKI_P|DEF_LNKI_Q" >/dev/null && add_from DEF_TABLES
+  echo "$from" |egrep "DEF_SETVAR|DEF_SHOUT" |egrep "DEF_TABLES|COMM|DF_CALENDAR|GLOBAL_COND|DEF_LNKO_P|DEF_LNKI_P|DEF_LNKI_Q" >/dev/null && add_from DEF_JOB
+  if echo "$from" |grep DEF_JOB |grep DF_CALENDAR >/dev/null; then
+    cle_calendrier=`echo $select |grep WEEKS_CAL && echo WEEKS_CAL || echo DAYS_CAL`
+    add_where "DF_CALENDAR.CALENDAR = DEF_JOB.$cle_calendrier"
+  fi
+  echo "$from" |grep CONFREG |grep DEF_TABLES >/dev/null && add_from COMM
+  echo "$from" |grep CONFREG |grep DEF_JOB >/dev/null && add_from COMM DEF_TABLES
+  echo "$from" |grep DEF_SETVAR |grep DEF_JOB >/dev/null && add_where "DEF_SETVAR.JOB_ID = DEF_JOB.JOB_ID and DEF_SETVAR.TABLE_ID = DEF_JOB.TABLE_ID"
+  echo "$from" |grep DEF_SHOUT |grep DEF_JOB >/dev/null && add_where "DEF_SHOUT.JOB_ID = DEF_JOB.JOB_ID and DEF_SHOUT.TABLE_ID = DEF_JOB.TABLE_ID"
+  echo "$from" |grep COMM |grep CONFREG >/dev/null && add_where "CONFREG.PROCESS_NAME = COMM.DATA_CENTER"
+  echo "$from" |grep COMM |grep DF_YEARS >/dev/null && add_where "COMM.DATA_CENTER = DF_YEARS.DATA_CENTER"
+  echo "$from" |grep DF_CALENDAR |grep DF_YEARS >/dev/null && add_where "DF_CALENDAR.CALENDAR = DF_YEARS.CALENDAR"
+  echo "$from" |grep DF_CALENDAR |grep COMM >/dev/null && add_where "DF_CALENDAR.DATA_CENTER = COMM.DATA_CENTER"
+  echo "$from" |grep DEF_JOB |grep DF_CALENDAR >/dev/null && add_where "DEF_JOB.DAYS_CAL = DF_CALENDAR.CALENDAR"
+  echo "$from" |grep DEF_TABLES |grep GLOBAL_COND >/dev/null && add_where "DEF_TABLES.DATA_CENTER = GLOBAL_COND.DATA_CENTER"
+  echo "$from" |grep DEF_TABLES |grep DF_CALENDAR >/dev/null && add_where "DEF_TABLES.DATA_CENTER = DF_CALENDAR.DATA_CENTER"
+  echo "$from" |grep DEF_TABLES |grep COMM >/dev/null && add_where "DEF_TABLES.DATA_CENTER = COMM.DATA_CENTER"
+  echo "$from" |grep DEF_TABLES |grep DEF_JOB >/dev/null && add_where "DEF_JOB.TABLE_ID = DEF_TABLES.TABLE_ID"
+  echo "$from" |grep DEF_LNKO_P |grep DEF_JOB >/dev/null && add_where "DEF_LNKO_P.JOB_ID = DEF_JOB.JOB_ID"
+  echo "$from" |grep DEF_LNKI_P |grep DEF_JOB >/dev/null && add_where "DEF_LNKI_P.JOB_ID = DEF_JOB.JOB_ID"
+  echo "$from" |grep DEF_LNKI_Q |grep DEF_JOB >/dev/null && add_where "DEF_LNKI_Q.JOB_ID = DEF_JOB.JOB_ID"
+  echo "$from" |grep DEF_LNKO_P |grep DEF_TABLES >/dev/null && add_where "DEF_LNKO_P.TABLE_ID = DEF_TABLES.TABLE_ID"
+  echo "$from" |grep DEF_LNKI_P |grep DEF_TABLES >/dev/null && add_where "DEF_LNKI_P.TABLE_ID = DEF_TABLES.TABLE_ID"
+  echo "$from" |grep DEF_LNKI_Q |grep DEF_TABLES >/dev/null && add_where "DEF_LNKI_Q.TABLE_ID = DEF_TABLES.TABLE_ID"
+}
+
+add_relations
+
+sql_request="$select $from $where"
+log DEBUG "sql_request = $sql_request" 
+
+send_mail(){
+  cols=`echo $1 |sed 's/ .*//g'`
+  filters=`echo $1 |sed "s/^$cols //g"`
+  log DEBUG "Envoi du mail: TE > CTM > Lister $cols, tels que $filters"
+  title=`echo "TE > CTM > Lister $cols, tels que $filters" | nawk '{print substr($0,0,255)}'`
+  cols=`echo $cols |sed 's/,/ /g'`
+  em_cmd(){ if [ `uname -n` = sadmcli1 ]; then em_ssh "$1"; else $1; fi; }
+  em_cmd "/usr/lib/sendmail -t" << EOF
+From: Prod_CTM.`uname -n`
+To: $2
+Subject: $title
+Mime-Version: 1.0
+Content-Type: text/html
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<meta http-equiv=Content-Type content="text/html; charset=ISO-8859-1">
+<title>$title</title>
+</head>
+<style type="text/css">
+body, p       { font-size: 12px; font-family: Arial; }
+h1            { font-size: 14px; font-weight: bold; font-family: Arial; }
+table, th, td { font-size: 10px; padding: 0; border: thin solid #808080; }
+th            { color: #696969; font-weight: bold; background-color: #D3D3D3; }
+</style>
+<body>
+Bonjour,
+<br><br>
+<ul><li><b>$title</b></li></ul>
+<br>
+<table>
+<tr>
+`for col in $cols; do echo "<th>$col</th>"; done`
+</tr>
+`while read line; do echo "<tr>"; for value in $line; do echo "<td>$value</td>"; done; echo "</tr>"; done`
+EOF
+  [ $? -eq 0 ] || log ERROR "Envoi du mail KO"
+}
+
+send_mail_csv(){
+  cols=`echo $1 |sed 's/ .*//g'`
+  filters=`echo $1 |sed "s/^$cols //g"`
+  title="TE > CTM > Lister $cols, tels que " #$filters"
+  title=`echo "TE > CTM > Lister $cols, tels que $filters" | nawk '{print substr($0,0,255)}'`
+  log DEBUG "Envoi mail CSV : $title. Commande: mailx -s '$title' $2"
+  em_cmd(){ if [ `uname -n` = sadmcli1 ]; then em_ssh "$1"; else $1; fi; }
+  em_cmd "(/usr/bin/echo 'Bonjour,\n\n$title :\n'; uuencode Resultat.csv) | mailx -s '$title' $2"
+  [ $? -eq 0 ] || log ERROR "Envoi du mail KO"
+}
+
+# Lit l'entree standard
+render(){
+  log DEBUG "render"
+  if [ "$mail" ]; then
+    log INFO "Envoi du resultat par mail $request $destinators"
+    send_mail "$request" "$destinators"
+    exit
+  fi
+  if [ "$mail_csv" ]; then
+    log INFO "Envoi du resultat par mail au format CSV $request $destinators"
+    columns=`echo $request|sed "s/ .*//g;s/,/$colsep/g"`
+    log DEBUG "columns=$columns"
+    nawk "BEGIN{print \"$columns\"}{print \$0}" | send_mail_csv "$request" "$destinators"
+    exit
+  fi
+  while read line; do echo $line; done
+}
+
+exec_sql(){
+  isql_cmd="isql -U$db_user -P$db_pass -D$db_name -b -w 1000"
+  log DEBUG "Execution de la requete: $isql_cmd"
+  em_cmd(){ if [ `uname -n` = sadmcli1 ]; then em_ssh "$1"; else $1; fi; }
+  [ "$test" ] || em_cmd "$isql_cmd" << EOF
+set nocount on
+go
+$1
+go
+EOF
+  [ $? -eq 0 ] || { log ERROR "isql command KO"; exit 1; }
+}
+
+exec_sql "$sql_request" |sed 's/^ //g;s/ *$//g' |render

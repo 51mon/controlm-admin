@@ -1,0 +1,56 @@
+#!/bin/bash
+
+log(){ echo "`date '+%Y-%m-%d %H:%M:%S'` $1 $2" | tee -a ~/logs/api_`date '+%Y%m%d'`.log >&2; }
+
+api_path(){ echo "$API_HOME/${1}_api"; }
+  
+usage_api(){
+  [ $# -ge 1 ] || { log ERROR "Nb args should be > 1"; return 1; }
+  while [ "$1" ]; do 
+    echo "Usage $1 :"
+    grep "^[a-zA-Z0-9.-_]*(){" `api_path $1` |egrep -v "# no help" |sed 's/^ *\([a-zA-Z.-_]*\)(.*/\1/' |sort | nawk '{print " " obj " <" obj "> " $0}' obj=$1
+    shift
+  done
+}
+
+IFS=" "
+objects="agent box dc em os"
+
+before_callback=0
+before_callback(){
+  [ $before_callback -eq 1 ] && return
+#  log INFO "Run before_callback"
+  for object in $objects; do eval $object=""; done
+  before_callback=1
+}
+
+for object in $objects; do
+#  . `api_path $object`
+  eval "$object(){
+    [ \$# -le 1 ] || [ \"\$1\" = help ] && { usage_api $object; return; }
+  execute(){
+    (IFS=\" \"
+    before_callback
+    export $object=\$1
+    shift
+    function=\$1
+    shift
+    . $API_HOME/general_api
+    . `api_path $object`
+#    log DEBUG \"Executing \$function \$@ with $object=\$$object\"
+#echo \$function \`while [ \$# -ne 0 ]; do echo \"\\\"\$1\\\" \"; shift; done\`
+    \$function \"\$@\"
+    )
+  }
+    if [ \"\$1\" = \"-\" ]; then
+      shift
+#      log DEBUG \"Reading stdin\"
+      while read obj; do
+        execute \"\$obj\" \"\$@\" || break
+      done
+    else
+      execute \"\$@\"
+    fi
+  }"
+done
+

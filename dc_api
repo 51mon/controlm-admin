@@ -1,0 +1,700 @@
+#!/bin/bash
+
+. $API_HOME/general_api
+
+unset em
+#get_em(){
+#  [ -z $em ] || { echo $em; return; }
+#  echo ${dc?} >/dev/null 2>&1 || { log ERROR "get_em prend un argument"; return 1; }
+#  case $dc in
+#    EAIPCTM|SAPP3*|SAPIFC|SAPEPC|EPROCPRD|SAPPDT|SAPSVG|SVG*|SAPDEV|SAPTEQS1|SAPTEDI1|SAPTEDI3|ARCTEP01|SAPTEB03|SAPTEF*|SAPTEP04|ECOMEDI*|EAI*|EDD*|CEMPRDTE|SAPADMINTE|PREADMTE|SAPTEUS3|SAPTEUS5|ARCTEP01|RMCUADEV|SAPTESVG*|WMTEDEV|XFB*)
+#      em=GUI_Clients_001;;
+#    SAPTEUS2) em=SAPTEUS2;;
+#    eaib01) em=EAIB01;;
+#    *) em=GUI_Clients_001
+#       log WARN "DC $dc inconnu, on utilise l'EM de test $em";;
+#  esac
+#  echo $em
+#}
+
+em_host(){ em $(get_em) em_host; }
+em_os_user(){ em $(get_em) os.user; }
+
+ref(){ # no help. DC EM host os_user db.name db.user db.pass
+#  _em="`get_em`"
+  echo "SAPDEV GUI_Clients_001 sapteqs1 controlm ctrlm630 controlm sybase
+EDDDEV GUI_Clients_001 eaixctm controlm ctrlm630 controlm sybase
+EDDPRD GUI_Clients_001 eaipctm controlm ctrlm630 controlm sybase
+SAPPDT GUI_Clients_001 cemprdte ctm_adm ctrlm630 ctm_adm sybase
+SVGP01 GUI_Clients_001 saptesvg3 controlm ctrlm630 controlm sybase
+SVGP02 GUI_Clients_001 saptesvg controlm ctrlm630 controlm sybase
+SAPPE1 GUI_Clients_001 eprocprd controlm ctrlm630 controlm sybase
+SAPP3A GUI_Clients_001 sapp3a controlm ctrlm630 controlm sybase
+SAPP3B GUI_Clients_001 sapp3b controlm ctrlm630 controlm sybase
+SAPP3D GUI_Clients_001 sapp3d controlm ctrlm630 controlm sybase
+SAPP3F GUI_Clients_001 sapp3f controlm ctrlm630 controlm sybase
+SAPP3G GUI_Clients_001 sapp3g controlm ctrlm630 controlm sybase
+LPADEV GUI_Clients_001 ergsapq01 controlm ctrlm630 controlm sybase
+LPAPRD GUI_Clients_001 ergsapp01 controlm ctrlm630 controlm sybase"
+#  unset _em
+}
+all(){
+  ref | cut -d' ' -f1
+}
+get_dc_name_by_host(){
+  ref |grep $dc | cut -d' ' -f1
+}
+get_em(){
+  [ `ref |egrep -c "^$dc "` -eq 0 ] && { log ERROR "get_em KO pas de ligne correspondante"; return 1; }
+  ref |egrep "^$dc " |cut -d' ' -f2
+}
+get_ref_attribute(){ # no help
+  [ $# -eq 1 ] || { log ERROR "get_em_attribute takes 1 arg: nb of attribute"; return 1; }
+  ref_line(){ ref | egrep "^$dc "; }
+  if [ `ref_line | wc -l | bc` -ne 1 ]; then
+    echo "$dc `get_em` `echo $dc |tr [:upper:] [:lower:]` controlm ctrlm620 controlm sybase"
+  else
+    ref_line
+  fi |cut -d' ' -f$1
+#log ERROR "EM $em unknown."; return 1; }
+}
+get_dc_from_host(){
+  [ `ref |egrep -c "^[a-zA-Z0-9_-]* [a-zA-Z0-9_-]* $1 "` -eq 0 ] && { log ERROR "get_dc KO pas de ligne correspondante"; return 1; }
+  ref |egrep "^[a-zA-Z0-9_-]* [a-zA-Z0-9_-]* $1 " |cut -d' ' -f1
+}
+host(){ get_ref_attribute 3 || return 1; }
+db_host(){ host; }
+#alias em_host=db_host
+db.user(){ get_ref_attribute 6 || return 1; }
+db.pass(){ get_ref_attribute 7 || return 1; } # no help
+db.name(){ get_ref_attribute 5 || return 1; }
+db_os_user(){ echo controlm; }
+os.user(){ get_ref_attribute 4 || return 1; }
+address(){ get_ref_attribute 3 || return 1; }
+
+
+dc_ssh(){ 
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=no `db.user`@`address` "$1" 2>/dev/null
+  rc=$?
+  [ $rc -eq 255 ] && { log ERROR "ssh to `address` KO"; return $rc; } || return $rc
+}
+
+# select count(*) from CONFREG where PROCESS_NAME = 'EAIDEV' and datediff(second, LAST_UPDATE, getdate()) < 40
+
+sysout_retention(){ batch_sql "select SYSOUTRETN from CMS_SYSPRM"; }
+start_of_the_week(){ batch_sql "select SWEEK from CMS_SYSPRM"; }
+ctm_version(){ batch_sql "select CMVERSION from CMS_SYSPRM"; }
+ctm_db_version(){ batch_sql "select DBVERSION from CMS_SYSPRM"; }
+
+base10_to_base36(){ # no help
+  in=$1
+  out=""
+  base36=0123456789abcdefghijklmnopqrstuvwxyz
+  while [ $in -ne 0 ]; do
+    var=`expr $in % 36`
+    out=${base36:var:1}$out
+    in=`expr $in / 36`
+  done
+  echo $out
+}
+base36_to_base10(){ # no help
+  in=$1
+  out=0
+  base36=0123456789abcdefghijklmnopqrstuvwxyz
+  pwr(){ echo "$1 $2" | nawk '{print $1 ^ $2}'; }
+  index(){ expr `echo "$1 $2" | nawk '{print index($1,$2)}'` - 1; }
+  pos=0
+  in_size=`expr $in : '.*'`
+  while [ $pos -lt $in_size ]; do
+    pos=`expr $pos + 1`
+    index=`expr $in_size - $pos`
+    var=${in:index:1}
+#    echo var=$var
+    pwr=`expr $pos - 1`
+    out=`expr $out + $(index $base36 $var) \* $(pwr 36 $pwr)`
+  done
+  echo $out
+}
+
+job_info(){
+  orderid=$1
+  get_fields "ORDERNO, STATUS, STATE, TASKTYPE, JOBNAME, SCHEDTAB, DAILYNAME, APPLGROUP, APPLIC, CMDLINE, PRIORITY, CRITICAL, CYCLIC, CYCLICINT, CONFIRM_R, CONFIRMED, HOLDFLAG, NODEGRP, NODEID, MEMLIB, MEMNAME, OVERLIB, ODATE, PROCID, RERUN_NO, OSCOMPSTAT, OSCOMPMSG, NEXTTIME, PREVDATE, NEXTDATE, STARTRUN, ENDRUN, MAXRERUN, FROMTIME, UNTIL, OWNER, MAXWAIT, RUNCOUNT, MAXDAYS, MAXRUNS, APPLTYPE" "from CMR_AJF where ORDERNO = `base36_to_base10 $orderid`"
+}
+
+opctemplate(){ # no help
+  case `uname -a | awk '{print $1}'` in
+    SunOS) opc_dir=/opt/OV/bin/OpC;;
+    AIX) opc_dir=/usr/lpp/OV/bin/OpC;;
+    Linux) opc_dir=/opt/OV/bin/OpC;;
+  esac
+  case $1 in
+    start) option="-e";;
+    stop) option="-d";;
+    list) option="-l";;
+    *) log ERROR "Option $1 unknown";;
+  esac
+  dc_ssh "$opc_dir/opctemplate $option DEF_UNIX_applicatif_process_controlm_agent"
+}
+
+start(){
+  dc_ssh "ctm_server/scripts/start_ctm" || return 1
+  opctemplate start
+}
+
+stop(){
+  opctemplate stop
+  dc_ssh "ctm_server/scripts/shut_ctm"
+}  
+
+em.gcs_logs(){
+  code=`get_code`
+  em `get_em` gcs_logs " <dc> $code | <dst> $code "
+}
+
+ctmvar_import_tabfile(){
+  [ $# -ne 1 ] && { log ERROR "This function takes the name of the tab separated file as argument"; return 1; }
+  [ -f $1 ] || { log ERROR "$1 does not exist"; return 1; }
+  IFS=`printf "\t"`
+  exec 3< $1
+  while read -u3 key msg; do
+    log INFO "Set global var %%\\$key = $msg"
+    dc_ssh "ctmvar -action SET -var '%%\\$key' -varexpr '$msg'"
+    [ $? -eq 0 ] || { log ERROR "ctmvar KO"; return 1; }
+  done
+  exec 3<&-
+}
+ctmvar_list(){
+  dc_ssh "ctmvar -action LIST | egrep '^%%'"
+}
+ctmvar_add_var(){
+  [ $# -ne 2 ] && { log ERROR "This function takes 2 args : var_name and var_value"; return 1; }
+  dc_ssh "ctmvar -action SET -var '%%\\$1' -varexpr '$2'"
+  [ $? -eq 0 ] || { log ERROR "ctmvar KO"; return 1; }
+}
+ctmvar_del_var(){
+  [ $# -ne 1 ] && { log ERROR "This function takes 1 arg : var_name"; return 1; }
+  dc_ssh "ctmvar -action DELETE -var '%%\\$1'"
+  [ $? -eq 0 ] || { log ERROR "ctmvar KO"; return 1; }
+}
+
+ctmcreate(){
+  usage(){
+    echo "Usage: ctmcreate -tagjcn value
+  with :
+    -t TASKTYPE
+    -a APPLICATION
+    -g GROUP
+    -j JOBNAME
+    -c CMDLINE
+    -n NODEGRP
+    -o OWNER
+    -p PATH/MEMLIB
+    -f FILENAME/MEMNAME"
+  }
+  unset task app group job cmd node user
+  while getopts t:a:g:j:c:n:o:p:f:h c; do
+    case $c in
+     t) task="$OPTARG";;
+     a) app="$OPTARG";;
+     g) group="$OPTARG";;
+     j) job="$OPTARG";;
+     c) cmd="$OPTARG";;
+     n) node="$OPTARG";;
+     o) user="$OPTARG";;
+     p) path="$OPTARG";;
+     f) file="$OPTARG";;
+     h) usage; return;;
+     *) log ERROR "option $c not supported"; usage; return 1;;
+    esac
+  done
+  # Set default values
+  task=${task-COMMAND}
+  app=${app-API}
+  job=${job-test_ctmcreate}
+  [ $task = COMMAND ] && [ "${cmd-not defined}" = "not defined" ] && cmd="uname -n"
+  user=${user-ctmagent}
+
+  task=${task+-TASKTYPE $task}
+  app=${app+-APPLICATION \"$app\"}
+  group=${group+-GROUP \"$group\"}
+  job=${job+-JOBNAME \"$job\"}
+  cmd=${cmd+-CMDLINE \"$cmd\"}
+  node=${node+-NODEGRP $node}
+  user=${user+-OWNER $user}
+  file=${file+-MEMNAME $file}
+  path=${path+-MEMLIB $path}
+  log DEBUG "ctmcreate cmd: ctmcreate $task $app $group $job $cmd $node $user $path $file"
+  output=`dc_ssh "ctmcreate $task $app $group $job $cmd $node $user $path $file"`
+  [ $? -ne 0 ] && { log ERROR "ctmcreate on $dc ko: $output"; return 1; } || log INFO "$dc: $output"
+}
+
+get_sysout(){
+  [ $# -ne 1 ] && { log ERROR "This function takes 1 arg : order_id"; return 1; }
+  output=`dc_ssh "ctmpsm -LISTSYSOUT $1"`
+  [ $? -ne 0 ] && { log ERROR "ctmpsm -LISTSYSOUT $1 ko: $output"; return 1; } || log INFO "$dc: $output"
+}
+
+export_defs(){ # no help
+  [ $1 != job ] && [ $1 != table ] && [ $1 != cal ] && { log ERROR "export_defs takes 1 or 2 args : job|table|cal [-]"; return 1; }
+  terms_file=build_terms_$1_${dc}_`date '+%Y%m%d_%H%M%S'`.xml
+  backup_file=exportdef$1_${dc}_`date '+%Y%m%d_%H%M%S'`.xml
+  action=$1; shift
+  log INFO "Building terms file for the $action export"
+  if [ $# -eq 0 ]; then
+    em `get_em` build_terms $dc '*' '*'
+  else
+    case $action in
+      job) 
+        if [ "$1" = "-" ]; then
+          em `get_em` build_terms $dc '*' -
+        else
+          em `get_em` build_terms $dc '*' $1
+        fi;;
+      table) 
+        if [ "$1" = "-" ]; then
+          em `get_em` build_terms $dc - '*'
+        else
+          em `get_em` build_terms $dc $1 '*'
+        fi;;
+      cal) log ERROR "not implemented yet"; return 1;;
+    esac
+  fi > $terms_file || return 1
+#  [ $# -eq 2 ] && [ "$2" != "-" ] && { log ERROR "export_defs takes 1 or 2 args : job|table|cal [-]"; return 1; }
+#  log INFO "Building terms file for the $1 export, taking $1s from standart input"
+#  [ $1 = job ] && [ "$2" = "-" ]
+#  if [ "$2" = "-" ]; then
+#    em `get_em` build_terms $dc $1 -
+#  else
+#    em `get_em` build_terms $dc
+#  fi > $terms_file || return 1
+  em `get_em` em_put $terms_file || return 1
+#  rm $terms_file
+  log INFO "Export of the ${action}s of $dc in $backup_file"
+  em `get_em` exportdef$action "-arg $terms_file -out $backup_file"
+  em `get_em` em_get $backup_file || return 1
+  em `get_em` em_ssh "rm $terms_file $backup_file"
+}
+
+#export_jobs(){ 
+#  [ $# -eq 0 ] && { em `get_em` build_terms $dc '*' '*'; return; }
+#  [ "$1" = "-" ] && { em `get_em` build_terms $dc '*' -; return; }
+#  em `get_em` build_terms $dc '*' $1
+#}
+    
+export_jobs(){ export_defs job "$@"; }
+export_tables(){ export_defs table "$@"; }
+export_cals(){ export_defs cal "$@"; }
+
+add_agent(){
+  [ $# -eq 1 ] || { log ERROR "add_agent prend la machine de l'agent en parametre"; return 1; }
+  ag_box=$1
+  log INFO "Perm hosts of $ag_box are `agent $ag_box get_permhosts`"
+  agent $ag_box add_permhost `address`
+  dc_ssh "ctmping -NODEID $ag_box -DISCOVER y"
+  ctmping $ag_box
+}
+
+rm_agent(){
+  ag_box=$1
+  log INFO "Perm hosts of $ag_box are `agent $ag_box get_permhosts`"
+  agent $ag_box rm_permhost `address`
+  log INFO "Delete the ctm_server/data/AGSTAT/$ag_box file if present"
+  dc_ssh "[ -f ctm_server/data/AGSTAT/$ag_box ] && rm ctm_server/data/AGSTAT/$ag_box" 2>/dev/null
+}
+
+is_agent(){
+  ag_box=$1
+  dc_ssh "[ -f ctm/data/AGSTAT/$ag_box ]"
+}
+
+agents(){ dc_ssh "ls -1 ctm_server/data/AGSTAT"; }
+agent_info(){ dc_ssh "test ctm_server/data/AGSTAT/$1 && cat ctm_server/data/AGSTAT/$1"; }
+
+# Ping d'un agent depuis un ctm server
+ctmping(){
+  [ $# -eq 1 ] || { log ERROR "ctmping takes 1 argument : the target"; return 1; }
+#  box=$1
+  ag_box=$1
+  if dc_ssh "ctm_diag_comm $ag_box | egrep 'ctmping to agent.*Succeeded' >/dev/null"; then
+    log INFO "ctmping from dc $dc to agent $ag_box succeeded"
+  else
+    log ERROR "ctmping from dc $dc to agent $ag_box failed"
+    return 1
+  fi
+}
+
+# Commandes pour gerer les tables specifiees dans l'entree std
+init_tables_pagination(){ # no help
+  unset tables table_list table_where_cond nb_tables
+  max_tables_per_page=300
+  case $# in
+    0) all_tables=`while read table; do echo $table; done`;;
+    1) all_tables=$1;;
+  esac
+  n_tables=`echo $all_tables | wc -l`
+#  echo n_tables $n_tables
+  n_pages=`expr $n_tables / $max_tables_per_page`
+  [ `expr $n_tables % $max_tables_per_page` -ne 0 ] && n_pages=`expr $n_pages + 1`
+#  echo n_pages $n_pages
+  [ $n_pages -gt 1 ] && log INFO "More than 300 tables, the SQL requests are paginated"
+  n_pagination=0
+}
+# A utiliser avec un while pour avoir la condition SQL table_where_cond pour selectionner les tables par pages(paquets)
+paginate_tables(){ # no help
+  n_pagination=`expr $n_pagination + 1`
+  [ $n_pagination -gt $n_pages ] && { n_pagination=0; return 1; }
+  start=`expr \( $n_pagination - 1 \) \* $max_tables_per_page + 1`
+  end=`expr $n_pagination \* $max_tables_per_page`
+  [ $n_pages -gt $max_tables_per_page ] && log DEBUG "Iteration $n_pagination, start = $start, end = $end"
+  tables=`echo $all_tables |sed -n "$start,$end p"`
+  table_list=`echo $tables |nawk 'BEGIN{a=""}{if(a==""){a=$1}else{a=a " " $1}}END{print a}' |sed "s/ /', '/g"`
+  table_where_cond="SCHED_TABLE in ('$table_list')"
+}
+
+debug_pagination(){
+  init_tables_pagination "$@" || return 1
+  while paginate_tables; do
+    echo table_where_cond=$table_where_cond
+  done
+}
+
+em_sql(){ # no help
+  em `get_em` batch_sql "$1"
+}
+
+list_tables(){
+  init_tables_pagination "$@" || return 1
+  while paginate_tables; do
+    em_sql "select count(*) from DEF_TABLES where DATA_CENTER = '$dc' and $table_where_cond"
+  done
+  while paginate_tables; do
+    em_sql "select count(*) from DEF_TABLES where DATA_CENTER = '$dc' and $table_where_cond"
+  done | sum
+}
+
+select_user_daily(){
+  sql_req(){ em `get_em` exec_sql "select SCHED_TABLE, USER_DAILY from DEF_TABLES where DATA_CENTER='$dc' and SCHED_TABLE = '$1'"; }
+  case $# in
+    1) daily=$1; while read table; do sql_req $table $daily || continue; done;;
+    2) table=$1 daily=$2; sql_req $table $daily || return 1;;
+    0) while read table daily; do sql_req $table $daily || continue; done;;
+    *) echo "Nb of args incorrect !"; return 1;;
+  esac
+}
+#update_user_daily(){
+#  sql_req(){ em `get_em` exec_sql "update DEF_TABLES set MODIFIED='1', USER_DAILY='$2' where DATA_CENTER='$dc' and SCHED_TABLE = '$1'"; }
+#  case $# in
+#    1) daily=$1; while read table; do sql_req $table $daily || continue; upload_tables $table; done;;
+#    2) table=$1 daily=$2; sql_req $table $daily || return 1; upload_tables $table;;
+#    0) while read table daily; do sql_req $table $daily || continue; upload_tables $table; done;;
+#    *) echo "Nb of args incorrect !"; return 1;;
+#  esac
+#}
+  
+# Obsolete ?
+import_tables_in_em(){ # no help
+#  init_tables_pagination "$@" || return 1
+
+# insert SQL ... (besoin de relancer)
+#  batch_sql "insert into DEF_TABLES (TABLE_ID, DATA_CENTER, SCHED_TABLE, USED_BY, MODIFIED, USER_DAILY, CHECKSUM, REAL_TABLEID) select (select max(TABLE_ID)+1 from DEF_TABLES), '$dc', '$table', ' ', '0', '', 'NEWTABLE', -1"
+
+  tmp_file=/tmp/`basename $0`_$import_tables_in_em.$$
+  touch $tmp_file && rm $tmp_file || { log ERROR "touch $tmp_file KO"; return 1; }
+  tables=""
+  case $# in
+    0) while read table; do 
+         tables="$tables $table"
+         echo $table >> $tmp_file
+       done;;
+    1) tables=$1
+       echo $1 >> $tmp_file;;
+  esac
+
+  deftable_file=deftable_file.tmp
+  touch $deftable_file || { log ERROR "touch $deftable_file KO"; return 1; }
+
+  cat > $deftable_file <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE DEFTABLE SYSTEM "deftable.dtd">
+<DEFTABLE>
+`for table in $tables; do
+    echo "<SCHED_TABLE TABLE_NAME=\"$table\" DATACENTER=\"$dc\">
+ <JOB
+  JOBNAME=\"DUMMY\" GROUP=\"DUMMY\" APPLICATION=\"DUMMY\"
+  OWNER=\"DUMMY\" AUTHOR=\"DUMMY\" TASKTYPE=\"Dummy\">
+ </JOB>
+</SCHED_TABLE>"
+done`
+</DEFTABLE>
+EOF
+
+  log INFO "Creation des tables sur $dc (vide) pour pouvoir les downloader"
+  scp $deftable_file `em_os_user`@`em_host`:. 2>/dev/null
+  em `get_em` em_ssh "deftable -pf .em_login -s `get_em` -src $deftable_file" 2>&1
+  [ $? -eq 0 ] || { log ERROR "deftable $dc > $table KO"; return 1; }
+
+  em `get_em` em_ssh "rm $deftable_file" 2>/dev/null && rm $deftable_file
+
+  log INFO "Download de la table $table de $dc"
+  exec 3< $tmp_file
+  while read -u3 table; do
+    log INFO "Download de la table $table de $dc"
+    em `get_em` ecs_cli "-BY_FORCE -TABLE_DOWNLOAD $dc $table"
+  done
+  exec 3<&-
+  rm $tmp_file
+}
+
+set_table_daily(){
+  [ $# -le 2 ] || { log ERROR "set_table_daily takes max 2 args : daily [table]"; return 1; }
+  ud=$1; shift
+  init_tables_pagination "$@" || return 1
+  while paginate_tables; do
+    em `get_em` sql "update DEF_TABLES set MODIFIED='1', USER_DAILY='$ud' where DATA_CENTER='$dc' and $table_where_cond and (USER_DAILY != 'MIGR_DC' or USER_DAILY = NULL)"
+  done
+}
+set_table_daily_from_input_and_upload(){
+  [ $# -eq 0 ] || { log ERROR "set_table_daily takes 0 arg"; return 1; }
+  tmp_file=/tmp/`basename $0`.$$
+  while read line; do echo $line >> $tmp_file; done
+  exec 3< $tmp_file
+  while read -u3 table daily; do
+    output=`em $(get_em) sql "update DEF_TABLES set MODIFIED='1', USER_DAILY='$daily' where DATA_CENTER='$dc' and SCHED_TABLE = '$table'"`
+    log DEBUG "update $table with $daily: $output"
+    [ "$output" != "(0 rows affected)" ] && upload_tables $table || log WARN "No table $table found on $dc"
+  done
+  exec 3<&-
+  rm $tmp_file
+}
+
+update_dc_to(){
+  [ $# -eq 1 ] || [ $# -eq 2 ] || { echo "Error takes 1 (+std input) or 2 arguments : tgt_dc [table]"; return 1; }
+  tgt_dc=$1; shift
+  node=`dc $dc address` || { log ERROR "get_box_from_dc $dc KO"; exit 1; }
+  tgt_node=`dc $tgt_dc address` || { log ERROR "get_box_from_dc $tgt_dc KO"; exit 1; }
+  log INFO "Move from dc $dc (node $node) to $tgt_dc (node $tgt_node)"
+
+  init_tables_pagination "$@" || return 1
+
+  tables_dans_new_dc=`while paginate_tables; do
+    em_sql "select SCHED_TABLE from DEF_TABLES where DATA_CENTER = '$tgt_dc' and $table_where_cond"
+  done`
+  if [ "$tables_dans_new_dc" != "" ]; then
+    log ERROR "$tables_dans_new_dc deja presentes dans dc"
+    return 1
+  fi
+  nb_tables_dans_old_dc=`while paginate_tables; do
+    em_sql "select count(*) from DEF_TABLES where DATA_CENTER = '$dc' and $table_where_cond"
+  done | sum`
+  if [ $nb_tables_dans_old_dc != $n_tables ]; then
+    log ERROR "nb_tables_dans_old_dc=$nb_tables_dans_old_dc != nb_tables=$nb_tables"
+    return 1
+  fi
+
+  while paginate_tables; do
+    req="begin transaction
+update DEF_JOB set `[ $node != $tgt_node ] && echo "NODE_ID = '$node',"` CHANGE_DATE = convert(varchar,getdate(),112)  
+from DEF_JOB, DEF_TABLES where (NODE_ID = null or NODE_ID = '' or NODE_ID = ' ') and DATA_CENTER = '$dc' and DEF_TABLES.TABLE_ID = DEF_JOB.TABLE_ID and $table_where_cond
+update DEF_TABLES set MODIFIED = '1', DATA_CENTER = '$tgt_dc' $update_tables where DATA_CENTER = '$dc' and $table_where_cond
+commit transaction"
+    log DEBUG "Request: $req"
+    em_sql "$req" || return 1
+  done
+}
+
+# Obsolete
+manage_table_input(){ # no help
+  case $# in
+    0) tables=`while read table; do echo $table; done |nawk 'BEGIN{a=""}{if(a==""){a=$1}else{a=a " " $1}}END{print a}'`;;
+    1) tables=$1;;
+  esac
+  table_list=`echo $tables |sed "s/ /', '/g"`
+  table_where_cond="SCHED_TABLE in ('$table_list')"
+  nb_tables=`for t in $tables; do echo; done |wc -l |bc`
+}
+
+sync_tables(){
+  log INFO "$1 to DC $dc"
+  action=`echo $1 | tr [:lower:] [:upper:]`
+  [ `echo $action |egrep -ci "UPLOAD|DOWNLOAD"` -eq 1 ] || { log ERROR "$action incorrect"; return 1; }
+  shift
+  [ "$1" = "-f" ] || [ "$1" = "force" ] && { force="-BY_FORCE"; shift; }
+
+  case $# in
+    1) em `get_em` ecs_cli "-TABLE_$action $dc $1 |egrep -v '^$'" || return 1;;
+    0) while read table; do
+         em `get_em` ecs_cli "$force -TABLE_$action $dc $table" || return 1
+       done
+       ;;
+  esac
+  echo debug sync_tables
+}
+upload_tables(){ sync_tables upload "$@"; }
+download_tables(){ sync_tables download "$@"; }
+
+#A effacer
+download_and_change_daily(){ # no help
+  log INFO "Download and set daily to MIGR_DC on old DC $dc"
+  case $# in
+    2) dc $dc import_table_in_em $2 || return 1
+       dc $dc set_table_daily $2 MIGR_DC;;
+    1) for table in `tables`; do
+         dc $dc import_table_in_em $table || return 1
+         dc $dc set_table_daily $table MIGR_DC
+       done;;
+  esac
+}
+
+# CMS_CMNPRM.DATA_CNTR_NAME ?
+
+delete_jobs(){
+  while read table job; do
+    em `get_em` ecs_cli -JOB_DELETE $dc $table $job ALL || return 1
+  done
+}
+
+sql_select(){ # no help
+  [ $# -eq 2 ] || [ $# -eq 3 ] || { echo "sql_select: nb args >= 2 : $@"; exit 1; }
+  table=$2
+  [ $# -eq 3 ] && where="where $3" || where=""
+  req="select $1 from $table $where"
+#  echo "request=$req" >&2
+  em_sql "$req" |sed 's/^ *//g;s/ *$//g'
+}
+
+log_result(){ rc=$?; [ $rc -eq 0 ] && log DEBUG "$1 is true" || log DEBUG "$1 is false"; return $rc; } # no help
+
+get_code(){ sql_select CODE COMM "DATA_CENTER = '$dc'"; }
+get_codes(){ sql_select CODE COMM; }
+is_code_used(){ [ `sql_select 'count(*)' COMM "CODE = '$1'"` -gt 0 ]; log_result is_code_used; }
+is_defined(){ [ `sql_select 'count(*)' COMM "DATA_CENTER = '$dc'"` -eq 1 ]; log_result is_defined; }
+is_enabled(){ [ `sql_select 'count(*)' COMM "DATA_CENTER = '$dc' and ENABLED = '1'"` -eq 1 ]; log_result is_enabled; }
+is_up(){
+  if gtw.is_defined $dc; then [ `sql_select CURRENT_STATE CONFREG "PROCESS_NAME = '$dc'"` -eq 1 ]; fi
+  log_result is_up
+}
+define(){
+#  [ $# -ge 3 ] || { echo "$0: error nb args should be >= 3"; exit 1; }
+  code=$1; shift
+  box=$1; shift
+  desc=$1
+
+  is_code_used $code && { log ERROR "data center code $code is already used"; return 1; }
+  columns="CODE, DATA_CENTER, PLATFORM, PROTOCOL, CONTROL_M_VER, TIME_ZONE, ENABLED, CTM_HOST_NAME, CTM_PORT_NUMBER, DESCRIPTION, CONTROL_R"
+  values="'$code', '$dc', 'UNIX', 'TCP', '620', '(GMT+01:00) Brussels, Copenhagen, Madrid, Paris', '1', '$box', 2370, '$desc', '0'"
+  case $db.name in
+    em620) true;;
+    em630) 
+      columns="$columns, CONTROL_B, CONTROL_T, UPPERCASE"
+      values="$values, '0', '0', '0'";;
+    *) echo "Base $db.name non geree"; exit 1;;
+  esac
+  log DEBUG "Insert into COMM table $code $dc $box $desc"
+  em_sql "insert into COMM ($columns) values ($values)"
+  log_result create_dc
+}
+remove(){
+  em_sql "delete from COMM where DATA_CENTER = '$dc'"
+}
+enable(){
+  em_sql "update COMM set ENABLED = '1' where DATA_CENTER = '$dc'"
+}
+disable(){
+  em_sql "update COMM set ENABLED = '0' where DATA_CENTER = '$dc'"
+}
+
+gtw.status(){
+  sql_select FREE_TEXT CONFREG "PROCESS_NAME = '$dc'"
+#  log `[ "$status" = Connected ] && echo INFO || echo ERROR` "Gateway status is $status"
+}
+gtw.is_connected(){ log INFO "Gateway status is `gtw.status`"; [ "`gtw.status` " = "Connected " ]; }
+gtw.is_defined(){ [ `sql_select 'count(*)' CONFREG "PROCESS_NAME = '$dc'"` -eq 1 ]; log_result gtw.is_defined; }
+gtw.is_up(){
+  if [ `sql_select 'count(*)' COMMREG "PROCESS_NAME = '$dc'"` -ne 1 ]; then
+    log INFO "No line in COMMREG table for $dc"; return 1
+  else
+    gtw.is_defined
+  fi
+  log_result gtw.is_up
+}
+gtw.ask_start(){
+  em_sql "update CONFREG set DESIRED_STATE = 1, LAST_UPDATE = getdate() where PROCESS_NAME ='$dc'"
+  log_result gtw.ask_start
+}
+gtw.ask_stop(){
+  em_sql "update CONFREG set DESIRED_STATE = 0, LAST_UPDATE = getdate() where PROCESS_NAME ='$dc'"
+  log_result gtw.ask_stop
+}
+gtw.is_asked_to_start(){ [ `sql_select 'count(*)' CONFREG "PROCESS_NAME = '$dc' and DESIRED_STATE = 1"` -eq 1 ]; }
+gtw.is_asked_to_stop(){ [ `sql_select 'count(*)' CONFREG "PROCESS_NAME = '$dc' and DESIRED_STATE = 0"` -eq 1 ]; }
+gtw.is_stopped(){ [ `sql_select 'count(*)' COMMREG "PROCESS_NAME = '$dc'"` -eq 1 ]; log gtw.is_stopped; }
+gtw.wait_state(){
+  delay=0
+  while [ $delay -lt 40 ]; do
+    desired=`sql_select DESIRED_STATE CONFREG "PROCESS_NAME = '$dc'"`
+    current=`sql_select CURRENT_STATE CONFREG "PROCESS_NAME = '$dc'"`
+    nb_process=`sql_select 'count(*)' COMMREG "PROCESS_NAME = '$dc'"`
+    if [ $desired -eq $current ] && [ $desired -eq $nb_process ]; then
+      log INFO "DESIRED_STATE = CURRENT_STATE = $nb_process"
+      return
+    fi
+    log INFO "DESIRED_STATE = $desired, CURRENT_STATE = $current, gtw pid: `sql_select PID COMMREG \"PROCESS_NAME = '$dc'\"`, status: `gtw.status`."
+    delay=`expr $delay + 4`; sleep 5
+  done
+  return 1
+}
+gtw.start(){
+  gtw.is_defined || return 1
+  gtw.wait_state || return 1
+  gtw.is_connected && { log WARN "Gateway already started and connected"; return; }
+  gtw.ask_start || return 1
+  gtw.wait_state
+}
+gtw.stop(){
+  gtw.is_defined || return 1
+  gtw.wait_state || return 1
+  gtw.ask_stop || return 1
+  gtw.wait_state
+}
+  
+gtw.define(){
+  em_sql "insert into CONFREG (MACHINE_NAME, PROCESS_TYPE, PROCESS_NAME, PROCESS_COMMAND, MACHINE_TYPE, CURRENT_STATE, DESIRED_STATE, LAST_UPDATE, CHECK_INTERVAL, CONFIGURATION) values ('`em_host`', 0, '$dc', 'ecs gtw -dc $dc', 0, 0, 0, getdate(), 20, 0)"
+}
+gtw.rm(){
+  em_sql "delete from CONFREG where PROCESS_NAME = '$dc'"
+}
+gtw.info(){
+  nb_CONFREG=`sql_select 'count(*)' CONFREG "PROCESS_NAME = '$dc'"`
+  log INFO "$nb_CONFREG line in CONFREG table."
+  sql_select '*' CONFREG "PROCESS_NAME = '$dc'"
+  nb_COMMREG=`sql_select 'count(*)' COMMREG "PROCESS_NAME = '$dc'"`
+  log INFO "$nb_COMMREG line in COMMREG table."
+  sql_select '*' COMMREG "PROCESS_NAME = '$dc'"
+  nb_COMM=`sql_select 'count(*)' COMM "DATA_CENTER = '$dc'"`
+  log INFO "$nb_COMM line in COMM table."
+  sql_select '*' COMM "DATA_CENTER = '$dc'"
+}
+
+create_and_start(){
+  [ $# -ge 2 ] || { log ERROR "create_and_start_dc prend 2 arguments : code server"; exit 1; }
+#  dc=$1
+  code=$1; shift
+  box=$1; shift
+  is_defined || define $code $box || exit 1
+  gtw.is_defined || gtw.define || exit 1
+  is_enabled || enable || exit 1
+  gtw.is_up && { log INFO "Gateway already operational"; exit; }
+  gtw.start || exit 1
+  gtw.is_connected
+}
+
+stop_and_delete(){
+#  [ $# -eq 1 ] || { log ERROR "create_and_start_dc prend 1 argument : dc"; exit 1; }
+#  dc=$1
+  log INFO "Data center code was `get_code`"
+  gtw.stop || exit 1
+  gtw.is_defined && { gtw.rm || exit $?; }
+  is_defined && { remove || exit $?; }
+  log INFO "Gateway deleted"
+}
+

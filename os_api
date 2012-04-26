@@ -1,0 +1,10 @@
+os_ssh(){ # no doc
+#  echo $ssh_cmd ctmagent@$os $1 2>/dev/null
+  $ssh_cmd ctmagent@$os "$1" 2>/dev/null
+}
+arc.size(){
+  os_ssh "kstat zfs:0:arcstats:size"
+}
+hpov.proc(){
+  os_ssh "cat /var/opt/OV/osspi/conf/procmon.cfg"
+}

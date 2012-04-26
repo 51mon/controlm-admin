@@ -1,0 +1,87 @@
+#!/bin/bash
+
+log(){
+  check_write_logs(){
+    [ -d ~/logs ] || { mkdir ~/logs || return 1; }
+    log_file=~/logs/api_`date '+%Y%m%d'`.log
+    touch $log_file || return 1
+  }
+  log=`date '+%Y-%m-%d %H:%M:%S'`
+  if check_write_logs; then
+    write_log(){ echo "$log $1 $2" | tee -a $log_file >&2; }
+  else 
+    write_log(){ echo "$log $1 $2" >&2; }
+  fi
+  case $# in
+    2) write_log $1 "$2";;
+    1) while read msg; do write_log $1 "$msg"; done;;
+  esac
+}
+
+ssh_cmd="ssh -o StrictHostKeyChecking=no -o BatchMode=yes"
+
+#my_ssh(){
+#  ssh_cmd="ssh -o StrictHostKeyChecking=no -o BatchMode=yes"
+#  case $# in
+#    3) ssh_cmd $1@$2 "$3" 2>/dev/null;;
+#    2) ssh_cmd $1@$2 2>/dev/null;;
+#  esac
+#}
+
+sum(){ nawk 'BEGIN{a=0}{a=a+$1}END{print a}'; } # no help
+
+# Les fonctions db.user db.pass db.name doivent etre definies
+batch_sql(){
+  [ -w /tmp ] || { log ERROR "/tmp inaccessible"; return 1; }
+  unset option
+  [ $# -eq 2 ] && { option="$1"; shift; }
+  $ssh_cmd `db_os_user`@`db_host` "isql $option -U `db.user` -P `db.pass` -D `db.name` -b -w 1000" <<EOF 2>/dev/null |tee /tmp/batch_sql.tmp |sed 's/^ *//;s/ *$//'
+set nocount on
+go
+$1
+go
+EOF
+  [ $? -eq 0 ] || { log ERROR "isql KO : `cat /tmp/batch_sql.tmp`"; rm /tmp/batch_sql.tmp; return 1; }
+  errors=`cat /tmp/batch_sql.tmp | egrep '^Server |Msg [0-9]*, Level [0-9]*, State [0-9]*'`
+  rm /tmp/batch_sql.tmp
+  if [ "$errors " != " " ]; then
+    log ERROR "Request KO"
+    return 1
+  fi
+}
+
+sql(){
+  batch_sql "set nocount off
+go
+$1" | log INFO
+}
+
+exec_sql(){
+  out=`batch_sql "set nocount off
+go
+$1"`
+  [ `echo $out |egrep -c "[(]([0-9][0-9][0-9]*|[1-9]) rows affected[)]"` -eq 1 ] || { echo $out; return 1; }
+  echo $out
+}
+
+get_fields(){
+  fields="$1"
+  fields=`echo $fields | sed 's/ *//g'`
+  result=`batch_sql "-s µ" "select $fields $2"` || return 1
+  result=`echo $result | tr '\n' 'µ' |xargs echo | sed 's/^µ//; s/µ$//; s/^ *//; s/ *µ */µ/g; s/ *$//'`
+#  echo result=$result
+  echo `echo dummy |nawk 'END{split(arg1,keys,","); split(arg2,vals,"µ"); for(i in keys){val=vals[i]; print keys[i]"=\""val"\"";}}' arg1="$fields" arg2="$result" | sort`
+}
+
+dump_db(){
+  dump_file="df_${em}_`db_name`_`date '+%Y%m%d_%H%M%S'`.dmp"
+  batch_sql "dump database `db_name` to '$dump_file'" || return 1
+}
+
+dump_db_and_keep_locally(){ # no help
+  dump_file="df_${em}_`db_name`_compress-1_`date '+%Y%m%d_%H%M%S'`.dmp"
+  batch_sql "dump database `db_name` to 'compress::1::$dump_file'" || return 1
+  log INFO "Copie locale du fichier $dump_file"
+  scp $em_user@`host`:$dump_file . 2>/dev/null || return 1
+  em_ssh "rm $dump_file" || return 1
+}
